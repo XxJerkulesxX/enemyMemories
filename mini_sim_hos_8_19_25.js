@@ -416,10 +416,17 @@ range(DAYS).forEach((d) => {
 
 // Build simple comp sets (RevPAR only; tweak to taste)
 const compFFI = new CompSet("FFI Comp", range(DAYS).map((d) => {
-  const occ = isWeekend(d) ? 0.86 : (d % 7 === 6 ? 0.58 : 0.65);
-  const adr = isWeekend(d) ? 165 : (d % 7 === 6 ? 122 : 132);
-  return occ * adr;
+  const dow = d % 7;          // 0=Mon ... 6=Sun
+  const isSat = dow === 5;
+  const isSun = dow === 6;
+
+  // Example: Sat strong, Sun soft, weekdays steady
+  const occ = isSat ? 0.86 : isSun ? 0.58 : 0.65;
+  const adr = isSat ? 165   : isSun ? 122   : 132;
+
+  return occ * adr;           // RevPAR = Occ * ADR
 }));
+
 const compTPS = new CompSet("TPS Comp", range(DAYS).map(() => 0.80 * 123)); // steady 80% @ $123 ADR
 
 // Sales pipeline: a few sample leads (qualified/won) for KPI demos
@@ -474,6 +481,44 @@ function topNAccounts(byAccount, n = 5) {
 }
 const ffiTop = topNAccounts(ffi.byAccount);
 const tpsTop = topNAccounts(tps.byAccount);
+
+function inspectDay(hotel, comp, d) {
+  const keys = hotel.rooms;
+  const c = hotel.calendar[d];
+  const occ = c.sold / keys;
+  const adr = c.sold ? c.revenue / c.sold : 0;
+  const hotelRevPAR = c.revenue / keys;
+
+  const compRevPAR = comp.revparByDay[d] ?? 0;
+  const rgi = compRevPAR ? (hotelRevPAR / compRevPAR) * 100 : 0;
+
+  console.log(`Day ${d}: occ=${(occ*100).toFixed(1)}% adr=$${adr.toFixed(2)} revpar=$${hotelRevPAR.toFixed(2)} | comp=$${compRevPAR.toFixed(2)} | RGI=${rgi.toFixed(1)}`);
+}
+
+
+function makeCompFromHotel(hotel, occFactor = 0.95, adrFactor = 0.97) {
+  const series = range(DAYS).map(d => {
+    const c = hotel.calendar[d];
+    const occ = c.sold / hotel.rooms;
+    const adr = c.sold ? c.revenue / c.sold : 0;
+    return (occ * occFactor) * (adr * adrFactor); // comp a bit softer
+  });
+  return new CompSet(`${hotel.name} Comp`, series);
+}
+
+// Example:
+// const compFFI = makeCompFromHotel(fairfield, 0.96, 0.98);
+
+function compFromTargetRGI(hotel, targetRGI = 100) {
+  const series = range(DAYS).map(d => {
+    const revparHotel = hotel.calendar[d].revenue / hotel.rooms;
+    return targetRGI ? (revparHotel * 100) / targetRGI : 0; // comp RevPAR
+  });
+  return new CompSet(`${hotel.name} Comp (RGI ${targetRGI})`, series);
+}
+// Example: comp set that’s ~5% weaker than you (RGI ~105 if you hold):
+// const compFFI = compFromTargetRGI(fairfield, 105);
+
 
 // Channel mix (% of revenue)
 function channelMix(byChannel, totalRev) {
