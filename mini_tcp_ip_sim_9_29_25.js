@@ -177,11 +177,117 @@ function buildHttpResponse({status=202, reason='Accepted', headers={}, body=''})
 }
 
 // ---------- Network (toy: immediate delivery) ----------
+// ---------- Rich NetworkLink (with media, rate, latency, loss, duplex) ----------
 class NetworkLink {
-  constructor(name) { this.name = name; this.rx = null; }
+  /**
+   * @param {object} opts
+   * @param {string} opts.name - label for debugging (e.g. "c->s")
+   * @param {("twisted-pair"|"fiber"|"coax"|"wireless"|"arcnet"|"token-ring"|"localtalk")} opts.medium
+   * @param {number} opts.rateGbps - nominal line rate in Gbit/s (e.g., 10, 25, 100, 400, 0.01 for ARCNET ~10 Mbit/s)
+   * @param {number} [opts.distanceMeters=10] - physical span; used for propagation delay
+   * @param {boolean} [opts.fullDuplex=true] - full or half duplex (legacy media might be half)
+   * @param {number} [opts.baseLatencyMs=0.05] - fixed per-hop latency (switch/PHY/etc)
+   * @param {number} [opts.jitterMs=0.02] - +/- random jitter added to each frame
+   * @param {number} [opts.lossRate=0] - probability [0..1] of dropping a frame
+   * @param {(bytes:Uint8Array)=>void} [opts.rx=null] - receiver callback; set later with connect()
+   */
+  constructor({
+    name,
+    medium = 'twisted-pair',
+    rateGbps = 1,              // default 1 GbE
+    distanceMeters = 10,
+    fullDuplex = true,
+    baseLatencyMs = 0.05,
+    jitterMs = 0.02,
+    lossRate = 0,
+    rx = null
+  }) {
+    this.name = name;
+    this.medium = medium;
+    this.rateGbps = rateGbps;
+    this.distanceMeters = distanceMeters;
+    this.fullDuplex = fullDuplex;
+    this.baseLatencyMs = baseLatencyMs;
+    this.jitterMs = jitterMs;
+    this.lossRate = lossRate;
+    this.rx = rx;
+
+    // Media presets: approximate propagation speed (m/s) and historical default rates
+    this.mediaDB = {
+      'twisted-pair': { v: 2.00e8, note: 'Cat5e/6/6A copper ~0.66c' },
+      'fiber':        { v: 2.05e8, note: 'SMF/MMF ~0.68c' },
+      'coax':         { v: 2.00e8, note: 'RG-6/RG-58 ~0.66c' },
+      'wireless':     { v: 3.00e8, note: 'RF in air ~c (ignoring MAC/PHY airtime)' },
+      'arcnet':       { v: 2.00e8, legacyGbps: 0.010, note: 'ARCNET ~2.5–10 Mbit/s' },
+      'token-ring':   { v: 2.00e8, legacyGbps: 0.016, note: '4/16 Mbit/s' },
+      'localtalk':    { v: 2.00e8, legacyGbps: 0.0029, note: '230.4 kbit/s' }
+    };
+
+    // If a legacy medium is chosen and rate not overridden, use its legacy speed
+    if (['arcnet','token-ring','localtalk'].includes(this.medium) && this.rateGbps === 1) {
+      const legacy = this.mediaDB[this.medium].legacyGbps ?? 0.01;
+      this.rateGbps = legacy;
+    }
+  }
+
   connect(receiver) { this.rx = receiver; }
-  send(frameBytes) { this.rx && this.rx(frameBytes); }
+
+  /**
+   * Simulate sending a frame over this link, with:
+   *  - serialization delay (bits / bitrate)
+   *  - propagation delay (distance / velocity)
+   *  - base latency + jitter
+   *  - optional loss
+   */
+  send(frameBytes) {
+    if (!this.rx) return;
+    if (Math.random() < this.lossRate) {
+      console.warn(`[Link ${this.name}] DROPPED frame (${frameBytes.length} B) lossRate=${this.lossRate}`);
+      return;
+    }
+
+    const lenBytes = frameBytes.length;
+    const bits = lenBytes * 8;
+    const bitratebps = this.rateGbps * 1e9;
+
+    // Serialization delay: time to clock bits onto the wire
+    const tSerializationMs = (bits / bitratebps) * 1000;
+
+    // Propagation delay: distance / propagation speed (medium)
+    const v = (this.mediaDB[this.medium]?.v) ?? 2.00e8; // m/s
+    const tPropagationMs = (this.distanceMeters / v) * 1000;
+
+    // Base + jitter
+    const jitter = (Math.random() * 2 * this.jitterMs) - this.jitterMs;
+    const totalDelayMs = Math.max(0,
+      this.baseLatencyMs + tSerializationMs + tPropagationMs + jitter
+    );
+
+    // Half-duplex backoff (toy): add extra delay if “busy”
+    const duplexPenaltyMs = (!this.fullDuplex) ? (Math.random() * 0.2) : 0;
+
+    const txDelay = totalDelayMs + duplexPenaltyMs;
+
+    // Log a concise link-layer view
+    console.log(
+      `[Link ${this.name}] medium=${this.medium} rate=${fmtRate(this.rateGbps)} ` +
+      `dist=${this.distanceMeters}m duplex=${this.fullDuplex ? 'full' : 'half'} ` +
+      `size=${lenBytes}B ser=${tSerializationMs.toFixed(3)}ms prop=${tPropagationMs.toFixed(3)}ms ` +
+      `lat=${this.baseLatencyMs}ms jitter=±${this.jitterMs}ms → txDelay≈${txDelay.toFixed(3)}ms`
+    );
+
+    setTimeout(() => this.rx && this.rx(frameBytes), txDelay);
+  }
 }
+
+// helper to format rates nicely
+function fmtRate(gbps) {
+  if (gbps >= 1000) return `${(gbps/1000).toFixed(1)} Tb/s`;
+  if (gbps >= 1)    return `${gbps} Gb/s`;
+  if (gbps >= 0.001) return `${(gbps*1000).toFixed(0)} Mb/s`;
+  return `${(gbps*1e6).toFixed(0)} b/s`;
+}
+
 
 // ---------- Server ----------
 class Server {
