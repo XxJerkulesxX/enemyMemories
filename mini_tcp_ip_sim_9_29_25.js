@@ -179,6 +179,10 @@ function buildHttpResponse({status=202, reason='Accepted', headers={}, body=''})
 // ---------- Network (toy: immediate delivery) ----------
 // ---------- Rich NetworkLink (with media, rate, latency, loss, duplex) ----------
 class NetworkLink {
+    // Static, read-only list of acceptable media types
+  static ACCEPTED_MEDIA = Object.freeze([
+    'twisted-pair', 'fiber', 'coax', 'wireless', 'arcnet', 'token-ring', 'localtalk'
+  ]);
   /**
    * @param {object} opts
    * @param {string} opts.name - label for debugging (e.g. "c->s")
@@ -230,7 +234,49 @@ class NetworkLink {
     }
   }
 
-  connect(receiver) { this.rx = receiver; }
+    // Small helper to format line rate in logs
+  static fmtRate(gbps) {
+    if (gbps >= 1000) return `${(gbps/1000).toFixed(1)} Tb/s`;
+    if (gbps >= 1)    return `${gbps} Gb/s`;
+    if (gbps >= 0.001) return `${(gbps*1000).toFixed(0)} Mb/s`;
+    return `${(gbps*1e6).toFixed(0)} b/s`;
+  }
+
+  connect(receiver) {
+    // Type checks
+    if (typeof receiver !== 'function') {
+      throw new TypeError(`[Link ${this.name}] connect(receiver): receiver must be a function`);
+    }
+    if (!this.medium) {
+      throw new Error(`[Link ${this.name}] medium is missing`);
+    }
+    if (!NetworkLink.ACCEPTED_MEDIA.includes(this.medium)) {
+      throw new Error(
+        `[Link ${this.name}] Unsupported medium "${this.medium}". ` +
+        `Supported: ${NetworkLink.ACCEPTED_MEDIA.join(', ')}`
+      );
+    }
+    if (typeof this.rateGbps !== 'number' || this.rateGbps <= 0) {
+      throw new Error(`[Link ${this.name}] Invalid rateGbps: ${this.rateGbps}`);
+    }
+
+    // Log that the link is now “plugged in”
+    console.log(
+      `[Link ${this.name}] CONNECTED ` +
+      `(medium=${this.medium}, rate=${NetworkLink.fmtRate(this.rateGbps)}, ` +
+      `dist=${this.distanceMeters}m, duplex=${this.fullDuplex ? 'full' : 'half'})`
+    );
+
+    // Wrap the receiver to add a delivery log (optional)
+    this.rx = (bytes) => {
+      console.log(
+        `[Link ${this.name}] deliver ${bytes.length}B ` +
+        `via ${this.medium} @ ${NetworkLink.fmtRate(this.rateGbps)}`
+      );
+      receiver(bytes);
+    };
+  }
+
 
   /**
    * Simulate sending a frame over this link, with:
@@ -240,7 +286,10 @@ class NetworkLink {
    *  - optional loss
    */
   send(frameBytes) {
-    if (!this.rx) return;
+    if (!this.rx) {
+      console.warn(`[Link ${this.name}] No receiver connected; dropping ${frameBytes.length}B`);
+      return;
+    }
     if (Math.random() < this.lossRate) {
       console.warn(`[Link ${this.name}] DROPPED frame (${frameBytes.length} B) lossRate=${this.lossRate}`);
       return;
@@ -275,7 +324,7 @@ class NetworkLink {
       `size=${lenBytes}B ser=${tSerializationMs.toFixed(3)}ms prop=${tPropagationMs.toFixed(3)}ms ` +
       `lat=${this.baseLatencyMs}ms jitter=±${this.jitterMs}ms → txDelay≈${txDelay.toFixed(3)}ms`
     );
-
+    
     setTimeout(() => this.rx && this.rx(frameBytes), txDelay);
   }
 }
