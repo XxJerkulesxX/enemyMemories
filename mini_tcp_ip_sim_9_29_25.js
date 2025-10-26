@@ -131,6 +131,63 @@ class TCPHeader {
     const windowSize = (b[14]<<8)|b[15];
     return {srcPort, dstPort, dataOffsetBytes: dataOffsetWords*4, flagsHex: hex(flags), windowSize};
   }
+
+  connect(receiver) { this.rx = receiver; }
+
+  /**
+   * Simulate sending a frame over this link, with:
+   *  - serialization delay (bits / bitrate)
+   *  - propagation delay (distance / velocity)
+   *  - base latency + jitter
+   *  - optional loss
+   */
+  send(frameBytes) {
+    if (!this.rx) return;
+    if (Math.random() < this.lossRate) {
+      console.warn(`[Link ${this.name}] DROPPED frame (${frameBytes.length} B) lossRate=${this.lossRate}`);
+      return;
+    }
+
+    const lenBytes = frameBytes.length;
+    const bits = lenBytes * 8;
+    const bitratebps = this.rateGbps * 1e9;
+
+    // Serialization delay: time to clock bits onto the wire
+    const tSerializationMs = (bits / bitratebps) * 1000;
+
+    // Propagation delay: distance / propagation speed (medium)
+    const v = (this.mediaDB[this.medium]?.v) ?? 2.00e8; // m/s
+    const tPropagationMs = (this.distanceMeters / v) * 1000;
+
+    // Base + jitter
+    const jitter = (Math.random() * 2 * this.jitterMs) - this.jitterMs;
+    const totalDelayMs = Math.max(0,
+      this.baseLatencyMs + tSerializationMs + tPropagationMs + jitter
+    );
+
+    // Half-duplex backoff (toy): add extra delay if “busy”
+    const duplexPenaltyMs = (!this.fullDuplex) ? (Math.random() * 0.2) : 0;
+
+    const txDelay = totalDelayMs + duplexPenaltyMs;
+
+    // Log a concise link-layer view
+    console.log(
+      `[Link ${this.name}] medium=${this.medium} rate=${fmtRate(this.rateGbps)} ` +
+      `dist=${this.distanceMeters}m duplex=${this.fullDuplex ? 'full' : 'half'} ` +
+      `size=${lenBytes}B ser=${tSerializationMs.toFixed(3)}ms prop=${tPropagationMs.toFixed(3)}ms ` +
+      `lat=${this.baseLatencyMs}ms jitter=±${this.jitterMs}ms → txDelay≈${txDelay.toFixed(3)}ms`
+    );
+
+    setTimeout(() => this.rx && this.rx(frameBytes), txDelay);
+  }
+}
+
+// helper to format rates nicely
+function fmtRate(gbps) {
+  if (gbps >= 1000) return `${(gbps/1000).toFixed(1)} Tb/s`;
+  if (gbps >= 1)    return `${gbps} Gb/s`;
+  if (gbps >= 0.001) return `${(gbps*1000).toFixed(0)} Mb/s`;
+  return `${(gbps*1e6).toFixed(0)} b/s`;
 }
 
 // ---------- HTTP helpers ----------
