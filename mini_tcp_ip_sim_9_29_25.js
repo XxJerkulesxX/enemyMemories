@@ -131,104 +131,6 @@ class TCPHeader {
     const windowSize = (b[14]<<8)|b[15];
     return {srcPort, dstPort, dataOffsetBytes: dataOffsetWords*4, flagsHex: hex(flags), windowSize};
   }
-}
-
-// ---------- HTTP helpers ----------
-function h2ToHttp11(dev) {
-  const host = dev[':authority'];
-  const method = dev[':method'];
-  const path = dev[':path'];
-  const headers = {
-    'Host': host,
-    'Connection': 'keep-alive',
-    'Accept': dev['accept'],
-    'Accept-Encoding': dev['accept-encoding'],
-    'Accept-Language': dev['accept-language'],
-    'Origin': dev['origin'],
-    'Referer': dev['referer'],
-    'User-Agent': dev['user-agent'],
-    'Content-Type': dev['content-type'],
-    'Content-Length': dev['content-length'],
-  };
-  const lines = [`${method} ${path} HTTP/1.1`];
-  for (const [k,v] of Object.entries(headers)) lines.push(`${k}: ${v}`);
-  lines.push('', ''); // no body for brevity
-  return lines.join('\r\n');
-}
-
-function parseHttpRequest(text) {
-  const [head] = text.split('\r\n\r\n');
-  const lines = head.split('\r\n');
-  const [method, path, version] = lines[0].split(' ');
-  const headers = {};
-  for (let i=1;i<lines.length;i++) {
-    if (!lines[i]) continue;
-    const idx = lines[i].indexOf(':');
-    if (idx>0) headers[lines[i].slice(0,idx).trim().toLowerCase()] = lines[i].slice(idx+1).trim();
-  }
-  return {method, path, version, headers};
-}
-
-function buildHttpResponse({status=202, reason='Accepted', headers={}, body=''}) {
-  const head = [`HTTP/1.1 ${status} ${reason}`];
-  for (const [k,v] of Object.entries(headers)) head.push(`${k}: ${v}`);
-  head.push('', body);
-  return head.join('\r\n');
-}
-
-// ---------- Network (toy: immediate delivery) ----------
-// ---------- Rich NetworkLink (with media, rate, latency, loss, duplex) ----------
-class NetworkLink {
-  /**
-   * @param {object} opts
-   * @param {string} opts.name - label for debugging (e.g. "c->s")
-   * @param {("twisted-pair"|"fiber"|"coax"|"wireless"|"arcnet"|"token-ring"|"localtalk")} opts.medium
-   * @param {number} opts.rateGbps - nominal line rate in Gbit/s (e.g., 10, 25, 100, 400, 0.01 for ARCNET ~10 Mbit/s)
-   * @param {number} [opts.distanceMeters=10] - physical span; used for propagation delay
-   * @param {boolean} [opts.fullDuplex=true] - full or half duplex (legacy media might be half)
-   * @param {number} [opts.baseLatencyMs=0.05] - fixed per-hop latency (switch/PHY/etc)
-   * @param {number} [opts.jitterMs=0.02] - +/- random jitter added to each frame
-   * @param {number} [opts.lossRate=0] - probability [0..1] of dropping a frame
-   * @param {(bytes:Uint8Array)=>void} [opts.rx=null] - receiver callback; set later with connect()
-   */
-  constructor({
-    name,
-    medium = 'twisted-pair',
-    rateGbps = 1,              // default 1 GbE
-    distanceMeters = 10,
-    fullDuplex = true,
-    baseLatencyMs = 0.05,
-    jitterMs = 0.02,
-    lossRate = 0,
-    rx = null
-  }) {
-    this.name = name;
-    this.medium = medium;
-    this.rateGbps = rateGbps;
-    this.distanceMeters = distanceMeters;
-    this.fullDuplex = fullDuplex;
-    this.baseLatencyMs = baseLatencyMs;
-    this.jitterMs = jitterMs;
-    this.lossRate = lossRate;
-    this.rx = rx;
-
-    // Media presets: approximate propagation speed (m/s) and historical default rates
-    this.mediaDB = {
-      'twisted-pair': { v: 2.00e8, note: 'Cat5e/6/6A copper ~0.66c' },
-      'fiber':        { v: 2.05e8, note: 'SMF/MMF ~0.68c' },
-      'coax':         { v: 2.00e8, note: 'RG-6/RG-58 ~0.66c' },
-      'wireless':     { v: 3.00e8, note: 'RF in air ~c (ignoring MAC/PHY airtime)' },
-      'arcnet':       { v: 2.00e8, legacyGbps: 0.010, note: 'ARCNET ~2.5–10 Mbit/s' },
-      'token-ring':   { v: 2.00e8, legacyGbps: 0.016, note: '4/16 Mbit/s' },
-      'localtalk':    { v: 2.00e8, legacyGbps: 0.0029, note: '230.4 kbit/s' }
-    };
-
-    // If a legacy medium is chosen and rate not overridden, use its legacy speed
-    if (['arcnet','token-ring','localtalk'].includes(this.medium) && this.rateGbps === 1) {
-      const legacy = this.mediaDB[this.medium].legacyGbps ?? 0.01;
-      this.rateGbps = legacy;
-    }
-  }
 
   connect(receiver) { this.rx = receiver; }
 
@@ -288,18 +190,107 @@ function fmtRate(gbps) {
   return `${(gbps*1e6).toFixed(0)} b/s`;
 }
 
-// ---------- Server ----------
-class Server {
+// ---------- HTTP helpers ----------
+function h2ToHttp11(dev) {
+  const host = dev[':authority'];
+  const method = dev[':method'];
+  const path = dev[':path'];
+  const headers = {
+    'Host': host,
+    'Connection': 'keep-alive',
+    'Accept': dev['accept'],
+    'Accept-Encoding': dev['accept-encoding'],
+    'Accept-Language': dev['accept-language'],
+    'Origin': dev['origin'],
+    'Referer': dev['referer'],
+    'User-Agent': dev['user-agent'],
+    'Content-Type': dev['content-type'],
+    'Content-Length': dev['content-length'],
+  };
+  const lines = [`${method} ${path} HTTP/1.1`];
+  for (const [k,v] of Object.entries(headers)) lines.push(`${k}: ${v}`);
+  lines.push('', ''); // no body for brevity
+  return lines.join('\r\n');
+}
 
+function parseHttpRequest(text) {
+  const [head] = text.split('\r\n\r\n');
+  const lines = head.split('\r\n');
+  const [method, path, version] = lines[0].split(' ');
+  const headers = {};
+  for (let i=1;i<lines.length;i++) {
+    if (!lines[i]) continue;
+    const idx = lines[i].indexOf(':');
+    if (idx>0) headers[lines[i].slice(0,idx).trim().toLowerCase()] = lines[i].slice(idx+1).trim();
+  }
+  return {method, path, version, headers};
+}
+
+function buildHttpResponse({status=202, reason='Accepted', headers={}, body=''}) {
+  const head = [`HTTP/1.1 ${status} ${reason}`];
+  for (const [k,v] of Object.entries(headers)) head.push(`${k}: ${v}`);
+  head.push('', body);
+  return head.join('\r\n');
+}
+
+// ---------- Network (toy: immediate delivery) ----------
+// ---------- Rich NetworkLink (with media, rate, latency, loss, duplex) ----------
+class NetworkLink {
     // Static, read-only list of acceptable media types
   static ACCEPTED_MEDIA = Object.freeze([
     'twisted-pair', 'fiber', 'coax', 'wireless', 'arcnet', 'token-ring', 'localtalk'
   ]);
-  constructor({ip='104.18.32.47', port=443, link}) {
-    this.ip = ip; this.port = port; this.link = link;
-    this.reassembly = []; // store payload chunks
-    link.connect((bytes)=>this.onFrame(bytes));
+  /**
+   * @param {object} opts
+   * @param {string} opts.name - label for debugging (e.g. "c->s")
+   * @param {("twisted-pair"|"fiber"|"coax"|"wireless"|"arcnet"|"token-ring"|"localtalk")} opts.medium
+   * @param {number} opts.rateGbps - nominal line rate in Gbit/s (e.g., 10, 25, 100, 400, 0.01 for ARCNET ~10 Mbit/s)
+   * @param {number} [opts.distanceMeters=10] - physical span; used for propagation delay
+   * @param {boolean} [opts.fullDuplex=true] - full or half duplex (legacy media might be half)
+   * @param {number} [opts.baseLatencyMs=0.05] - fixed per-hop latency (switch/PHY/etc)
+   * @param {number} [opts.jitterMs=0.02] - +/- random jitter added to each frame
+   * @param {number} [opts.lossRate=0] - probability [0..1] of dropping a frame
+   * @param {(bytes:Uint8Array)=>void} [opts.rx=null] - receiver callback; set later with connect()
+   */
+  constructor({
+    name,
+    medium = 'twisted-pair',
+    rateGbps = 1,              // default 1 GbE
+    distanceMeters = 10,
+    fullDuplex = true,
+    baseLatencyMs = 0.05,
+    jitterMs = 0.02,
+    lossRate = 0,
+    rx = null
+  }) {
+    this.name = name;
+    this.medium = medium;
+    this.rateGbps = rateGbps;
+    this.distanceMeters = distanceMeters;
+    this.fullDuplex = fullDuplex;
+    this.baseLatencyMs = baseLatencyMs;
+    this.jitterMs = jitterMs;
+    this.lossRate = lossRate;
+    this.rx = rx;
+
+    // Media presets: approximate propagation speed (m/s) and historical default rates
+    this.mediaDB = {
+      'twisted-pair': { v: 2.00e8, note: 'Cat5e/6/6A copper ~0.66c' },
+      'fiber':        { v: 2.05e8, note: 'SMF/MMF ~0.68c' },
+      'coax':         { v: 2.00e8, note: 'RG-6/RG-58 ~0.66c' },
+      'wireless':     { v: 3.00e8, note: 'RF in air ~c (ignoring MAC/PHY airtime)' },
+      'arcnet':       { v: 2.00e8, legacyGbps: 0.010, note: 'ARCNET ~2.5–10 Mbit/s' },
+      'token-ring':   { v: 2.00e8, legacyGbps: 0.016, note: '4/16 Mbit/s' },
+      'localtalk':    { v: 2.00e8, legacyGbps: 0.0029, note: '230.4 kbit/s' }
+    };
+
+    // If a legacy medium is chosen and rate not overridden, use its legacy speed
+    if (['arcnet','token-ring','localtalk'].includes(this.medium) && this.rateGbps === 1) {
+      const legacy = this.mediaDB[this.medium].legacyGbps ?? 0.01;
+      this.rateGbps = legacy;
+    }
   }
+
     // Small helper to format line rate in logs
   static fmtRate(gbps) {
     if (gbps >= 1000) return `${(gbps/1000).toFixed(1)} Tb/s`;
@@ -308,7 +299,7 @@ class Server {
     return `${(gbps*1e6).toFixed(0)} b/s`;
   }
 
-    connect(receiver) {
+  connect(receiver) {
     // Type checks
     if (typeof receiver !== 'function') {
       throw new TypeError(`[Link ${this.name}] connect(receiver): receiver must be a function`);
@@ -343,15 +334,74 @@ class Server {
     };
   }
 
+
+  /**
+   * Simulate sending a frame over this link, with:
+   *  - serialization delay (bits / bitrate)
+   *  - propagation delay (distance / velocity)
+   *  - base latency + jitter
+   *  - optional loss
+   */
   send(frameBytes) {
     if (!this.rx) {
       console.warn(`[Link ${this.name}] No receiver connected; dropping ${frameBytes.length}B`);
       return;
     }
-    // (Here you can keep your delay/loss simulation before delivery)
-    this.rx(frameBytes);
-  }
+    if (Math.random() < this.lossRate) {
+      console.warn(`[Link ${this.name}] DROPPED frame (${frameBytes.length} B) lossRate=${this.lossRate}`);
+      return;
+    }
 
+    const lenBytes = frameBytes.length;
+    const bits = lenBytes * 8;
+    const bitratebps = this.rateGbps * 1e9;
+
+    // Serialization delay: time to clock bits onto the wire
+    const tSerializationMs = (bits / bitratebps) * 1000;
+
+    // Propagation delay: distance / propagation speed (medium)
+    const v = (this.mediaDB[this.medium]?.v) ?? 2.00e8; // m/s
+    const tPropagationMs = (this.distanceMeters / v) * 1000;
+
+    // Base + jitter
+    const jitter = (Math.random() * 2 * this.jitterMs) - this.jitterMs;
+    const totalDelayMs = Math.max(0,
+      this.baseLatencyMs + tSerializationMs + tPropagationMs + jitter
+    );
+
+    // Half-duplex backoff (toy): add extra delay if “busy”
+    const duplexPenaltyMs = (!this.fullDuplex) ? (Math.random() * 0.2) : 0;
+
+    const txDelay = totalDelayMs + duplexPenaltyMs;
+
+    // Log a concise link-layer view
+    console.log(
+      `[Link ${this.name}] medium=${this.medium} rate=${fmtRate(this.rateGbps)} ` +
+      `dist=${this.distanceMeters}m duplex=${this.fullDuplex ? 'full' : 'half'} ` +
+      `size=${lenBytes}B ser=${tSerializationMs.toFixed(3)}ms prop=${tPropagationMs.toFixed(3)}ms ` +
+      `lat=${this.baseLatencyMs}ms jitter=±${this.jitterMs}ms → txDelay≈${txDelay.toFixed(3)}ms`
+    );
+    
+    setTimeout(() => this.rx && this.rx(frameBytes), txDelay);
+  }
+}
+
+// helper to format rates nicely
+function fmtRate(gbps) {
+  if (gbps >= 1000) return `${(gbps/1000).toFixed(1)} Tb/s`;
+  if (gbps >= 1)    return `${gbps} Gb/s`;
+  if (gbps >= 0.001) return `${(gbps*1000).toFixed(0)} Mb/s`;
+  return `${(gbps*1e6).toFixed(0)} b/s`;
+}
+
+
+// ---------- Server ----------
+class Server {
+  constructor({ip='104.18.32.47', port=443, link}) {
+    this.ip = ip; this.port = port; this.link = link;
+    this.reassembly = []; // store payload chunks
+    link.connect((bytes)=>this.onFrame(bytes));
+  }
   onFrame(bytes) {
     // Parse IPv4
     const ip = IPv4Header.parse(bytes);
@@ -541,39 +591,8 @@ function safeDecode(bytes) {
   };
 
   // Wire up links
-// client → server over 100G fiber, 2km metro run
-const linkClientToServer = new NetworkLink({
-  name: 'c->s',
-  medium: 'fiber',
-  rateGbps: 100,
-  distanceMeters: 2000,
-  fullDuplex: true,
-  baseLatencyMs: 0.05,
-  jitterMs: 0.02,
-  lossRate: 0
-});
-
-// server → client over 10G twisted-pair, 50m (datacenter top-of-rack)
-const linkServerToClient = new NetworkLink({
-  name: 's->c',
-  medium: 'twisted-pair',
-  rateGbps: 10,
-  distanceMeters: 50,
-  fullDuplex: true
-});
-
-// legacy lab: ARCNET (10 Mbit/s) half-duplex, 100m coax
-const arcnetLab = new NetworkLink({
-  name: 'lab',
-  medium: 'arcnet',      // auto-sets ~10 Mbit/s if you didn't override rateGbps
-  rateGbps: 0.010,       // explicit 10 Mbit/s
-  distanceMeters: 100,
-  fullDuplex: false,
-  baseLatencyMs: 1.5,
-  jitterMs: 0.5,
-  lossRate: 0.01
-});
-
+  const linkClientToServer = new NetworkLink('c->s');
+  const linkServerToClient = new NetworkLink('s->c');
 
   const server = new Server({ip:'104.18.32.47', port:443, link: linkClientToServer});
   server.attachReturn(linkServerToClient);

@@ -3,28 +3,11 @@
  * @param {number} k2
  * @return {number}
  */
-let maxDistinctElements = function(nums, k = 0) {
+let maxDistinctElements = function(nums, k) {
 //nums is input array
 // determine if nums is a set
 
-
 };
-function isFloat(num) {
-      return num % 1 !== 0;
-    };
-
-const randomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
-
-const setA = Array.from({ length: randomInt(4, 8) }, () => randomInt(0, 100));
-const setB = Array.from({ length: randomInt(4, 8) }, () => randomInt(0, 100));
-
-let isFloatRes = isFloat(5.74);
-
-console.log('Set A:', setA);
-console.log('Set B:', setB);
-
-
-
 
 
 
@@ -86,8 +69,6 @@ function quadraticTime(n) {
 function logarithmicTime(n, c = 1) {
   return c * Math.log2(n);  // base-2 logarithm (binary growth)
 };
-
-
 
 // Sorted array, O(log n) search
 function binarySearch(arr, target) {
