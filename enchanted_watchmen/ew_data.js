@@ -1050,8 +1050,6 @@ domain.addDNSRecord(mxRecord);
 domain.addDNSRecord(txtRecord);
 
 
-const github_workflows_token = 'redacted';
-
 
 const localHost = new Host('LocalHost', '127.0.0.1'); // Loopback address for local development
 
