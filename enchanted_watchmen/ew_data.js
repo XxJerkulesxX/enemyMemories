@@ -752,7 +752,7 @@ class VPSHost extends Host {
         this.controlPanel = controlPanel;
     }
 
-    hostPassword() {
+    getHostPassword() {
         return this.hostPassword;
     }
 
@@ -797,7 +797,7 @@ class VPSHost extends Host {
     }
 
     localhost() {
-        if (typeof network === 'undefined') {
+        if (typeof this.network === 'undefined') {
             console.log('Network class not found. Running web server locally.');
             // Code to run the web server on localhost
             // ...
