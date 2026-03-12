@@ -34,6 +34,8 @@ export function buildAccord2006EX_2p4() {
 
   const v = new Vehicle({ vin: "SIM-ACCORD-2006-EX", spec, bus });
 
+  console.log('pragma');
+
   // Systems
   const electrical = v.addSystem(new ElectricalSystem({ bus }));
   const powertrain = v.addSystem(new PowertrainSystem({ bus }));
@@ -51,6 +53,9 @@ export function buildAccord2006EX_2p4() {
     enabledWhen: (state) => state.keyPosition === "ACC" || state.keyPosition === "ON"
   });
 
+
+
+  console.log(typeof electrical);
   // Powertrain parts
   powertrain.addPart(new Engine({ id: "eng1", name: "Honda 2.4L I4", displacementL: 2.4, cylinders: 4, idleRPM: 750 }));
   powertrain.addPart(new StarterMotor({ id: "st1", crankRPM: 250 }));
