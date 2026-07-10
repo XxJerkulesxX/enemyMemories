@@ -11,6 +11,9 @@ import { Battery, Fuse, CigaretteLighterSocket } from "../parts/electrical_parts
 import { Engine, StarterMotor } from "../parts/engine_parts.js";
 import { Door, DoorLockActuator, DoorLockLinkage } from "../parts/door_parts.js";
 
+import { AudioSystem } from "../systems/audio.js";
+import { HeadUnit, Speaker} from "../parts/audio_parts.js";
+
 import { Taxonomy } from "./specs.js";
 
 export function buildAccord2006EX_2p4() {
